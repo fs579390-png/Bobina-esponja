@@ -562,32 +562,13 @@ function tFav(id){var i=S.favs.indexOf(id);if(i>=0)S.favs.splice(i,1);else S.fav
 
 function _mkH(u){return u.replace(/^http:\/\//i,'https://')}
 
-function _resolveUrl(u,base){
-  if(u.indexOf('http://')===0||u.indexOf('https://')===0)return u;
-  if(base.charAt(base.length-1)!=='/')base=base.substring(0,base.lastIndexOf('/')+1);
-  return base+u;
-}
-
-function _rewriteM3U8(text,origUrl,pxFn){
-  var base=origUrl.substring(0,origUrl.lastIndexOf('/')+1);
-  var lines=text.split('\n');var out=[];
-  for(var i=0;i<lines.length;i++){
-    var ln=lines[i];var tr=ln.trim();
-    if(!tr){out.push(ln);continue}
-    if(tr.charAt(0)==='#'){
-      if(tr.indexOf('URI="')!==-1){
-        out.push(ln.replace(/URI="([^"]+)"/g,function(m,u){return'URI="'+pxFn(_resolveUrl(u,base))+'"'}));
-      }else if(tr.indexOf("URI='")!==-1){
-        out.push(ln.replace(/URI='([^']+)'/g,function(m,u){return'URI="'+pxFn(_resolveUrl(u,base))+'"'}));
-      }else{out.push(ln)}
-    }else{
-      out.push(pxFn(_resolveUrl(tr,base)));
-    }
-  }
-  return out.join('\n');
-}
-
-/* HLS rewrite helpers */
+/* === REPROCAO DE CANAIS === */
+var _PX_FNS=[
+  function(u){return'https://corsproxy.io/?'+encodeURIComponent(u)},
+  function(u){return'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(u)},
+  function(u){return'https://thingproxy.freeboard.io/fetch/'+u},
+  function(u){return'https://api.allorigins.win/raw?url='+encodeURIComponent(u)}
+];
 
 function playCh(ch){
   S.selCh=ch;S.playing=false;rCh();resetZoom();
@@ -606,20 +587,27 @@ function playCh(ch){
   var ST=[];
   if(srvIsH){
     ST.push({t:'h',u:bH+'.m3u8',px:null,n:'HLS Direto'});
-    ST.push({t:'v',u:bH+'.ts',px:null,n:'TS Direto'});
+    ST.push({t:'d',u:bH+'.ts',px:null,n:'TS Direto'});
   }
   if(pageIsH&&!srvIsH){
-    ST.push({t:'vp',u:bU+'.ts',px:function(u){return'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(u)},n:'TS Proxy 1'});
-    ST.push({t:'vp',u:bU+'.ts',px:function(u){return'https://corsproxy.io/?'+encodeURIComponent(u)},n:'TS Proxy 2'});
-    ST.push({t:'vp',u:bU+'.ts',px:function(u){return'https://thingproxy.freeboard.io/fetch/'+u},n:'TS Proxy 3'});
-    ST.push({t:'hr',u:bU+'.m3u8',px:function(u){return'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(u)},n:'HLS Rewrite 1'});
-    ST.push({t:'hr',u:bU+'.m3u8',px:function(u){return'https://corsproxy.io/?'+encodeURIComponent(u)},n:'HLS Rewrite 2'});
-    ST.push({t:'v',u:bH+'.m3u8',px:null,n:'Nativo m3u8'});
-    ST.push({t:'v',u:bH+'.ts',px:null,n:'Nativo TS'});
+    /* PRIORIDADE: HLS.js com xhrSetup proxy (melhor para streaming) */
+    for(var i=0;i<_PX_FNS.length;i++){
+      (function(fn,idx){ST.push({t:'hp',u:bU+'.ts',px:fn,n:'HLS Proxy TS '+(idx+1)})})(_PX_FNS[i],i);
+    }
+    for(var i=0;i<_PX_FNS.length;i++){
+      (function(fn,idx){ST.push({t:'hp',u:bU+'.m3u8',px:fn,n:'HLS Proxy m3u8 '+(idx+1)})})(_PX_FNS[i],i);
+    }
+    /* FALLBACK: video.src direto pelo proxy */
+    for(var i=0;i<2;i++){
+      (function(fn,idx){ST.push({t:'d',u:fn(bU+'.ts'),px:null,n:'TS Proxy '+(idx+1)})})(_PX_FNS[i],i);
+    }
+    /* TENTATIVA: HTTPS direto */
+    ST.push({t:'h',u:bH+'.m3u8',px:null,n:'HTTPS m3u8'});
+    ST.push({t:'d',u:bH+'.ts',px:null,n:'HTTPS TS'});
   }else if(!pageIsH){
     ST.push({t:'h',u:bU+'.m3u8',px:null,n:'HLS HTTP'});
-    ST.push({t:'v',u:bU+'.ts',px:null,n:'TS HTTP'});
-    ST.push({t:'v',u:bU+'.mp4',px:null,n:'MP4'});
+    ST.push({t:'d',u:bU+'.ts',px:null,n:'TS HTTP'});
+    ST.push({t:'d',u:bU+'.mp4',px:null,n:'MP4'});
   }
 
   var si=0,tm=null,hi=null,ok=false;
@@ -633,115 +621,94 @@ function playCh(ch){
     if(ok)return;ok=true;ld.style.display='none';S.playing=true;
     try{clearTimeout(tm)}catch(e){}
     console.log('[IPTV] OK via: '+lb);
+    startStallWatch(vid,hi);startBlackScreenWatch(vid,hi);
   }
   function nx(){
-    if(si>=ST.length){cl();clearStallWatch();clearBlackWatch();ld.style.display='none';document.getElementById('vpErT').textContent='Erro de conexao. Verifique seu servidor.';er.style.display='flex';return}
+    if(si>=ST.length){cl();clearStallWatch();clearBlackWatch();ld.style.display='none';
+      var erT=document.getElementById('vpErT');
+      erT.textContent='Nao foi possivel reproduzir. Os proxies podem estar sobrecarregados. Tente novamente em alguns segundos.';
+      er.style.display='flex';return}
     var s=ST[si];si++;
     console.log('[IPTV] '+si+'/'+ST.length+': '+s.n);
     try{clearTimeout(tm)}catch(e){}
-    if(s.t==='h')doHLS(s.u,null,s.n);
-    else if(s.t==='hr')doHLSRewrite(s.u,s.px,s.n);
-    else if(s.t==='vp')doVidProxy(s.u,s.px,s.n);
+    if(s.t==='hp')doHLSProxy(s.u,s.px,s.n);
+    else if(s.t==='h')doHLS(s.u,null,s.n);
     else doVidDirect(s.u,s.n);
   }
 
+  /* HLS.js direto (servidor HTTPS ou HTTP local) */
   function doHLS(url,pxFn,lb){
     if(typeof Hls==='undefined'||!Hls.isSupported()){doVidDirect(url,lb);return}
     cl();
-    var cfg={
+    var h=new Hls({
       enableWorker:true,lowLatencyMode:false,maxBufferLength:30,maxMaxBufferLength:120,
       maxBufferSize:120*1000000,maxBufferHole:1,startLevel:-1,
       manifestLoadingTimeOut:10000,manifestLoadingMaxRetry:1,manifestLoadingRetryDelay:800,
       levelLoadingTimeOut:10000,levelLoadingMaxRetry:1,levelLoadingRetryDelay:800,
       fragLoadingTimeOut:12000,fragLoadingMaxRetry:3,fragLoadingRetryDelay:800,
-      enableSoftFadeOut:true,progressive:true,
-      abrEwmaDefaultEstimate:500000,testBandwidth:false,startFragPrefetch:true
-    };
-    var h=new Hls(cfg);hi=h;S.hls=h;
-    h.loadSource(url);h.attachMedia(vid);
+      progressive:true,testBandwidth:false,startFragPrefetch:true
+    });
+    hi=h;S.hls=h;h.loadSource(url);h.attachMedia(vid);
     vid.volume=S.volume/100;vid.muted=S.muted;
     var dn=false;
     h.on(Hls.Events.MANIFEST_PARSED,function(){
       if(dn||ok)return;dn=true;
-      vid.play().then(function(){vOk(lb);S.muted=false;vid.muted=false;_autoMuted=false;hideUnmuteHint();uPP();startStallWatch(vid,h);startBlackScreenWatch(vid,h)}).catch(function(){vid.muted=true;S.muted=true;_autoMuted=true;vid.play().then(function(){vOk(lb);uPP();startStallWatch(vid,h);startBlackScreenWatch(vid,h);showUnmuteHint()}).catch(function(){dn=false;cl();setTimeout(nx,300)})});
+      vid.play().then(function(){vOk(lb);S.muted=false;vid.muted=false;_autoMuted=false;hideUnmuteHint();uPP()}).catch(function(){vid.muted=true;S.muted=true;_autoMuted=true;vid.play().then(function(){vOk(lb);uPP();showUnmuteHint()}).catch(function(){dn=false;cl();setTimeout(nx,300)})});
     });
     h.on(Hls.Events.FRAG_LOADED,function(){vOk(lb);_retryCount=0;_lastBufPos=vid.currentTime;_blackCount=0});
-    h.on(Hls.Events.LEVEL_SWITCHED,function(){_blackCount=0});
     h.on(Hls.Events.ERROR,function(e,d){
       if(ok)return;
-      if(d.fatal){console.log('[IPTV] HLS err: '+d.details);cl();setTimeout(nx,200);return}
+      if(d.fatal){cl();setTimeout(nx,200);return}
       if(d.type===Hls.ErrorTypes.MEDIA_ERROR){try{h.recoverMediaError()}catch(e){}}
     });
-    tm=setTimeout(function(){if(!ok&&!dn){console.log('[IPTV] TO: '+lb);cl();nx()}},12000);
+    tm=setTimeout(function(){if(!ok&&!dn){cl();nx()}},12000);
   }
 
-  function doHLSRewrite(origUrl,pxFn,lb){
-    if(typeof Hls==='undefined'||!Hls.isSupported()){doVidProxy(origUrl,pxFn,lb);return}
+  /* HLS.js com proxy via xhrSetup - PRINCIPAL para HTTPS+HTTP */
+  function doHLSProxy(url,proxyFn,lb){
+    if(typeof Hls==='undefined'||!Hls.isSupported()){doVidDirect(proxyFn(url),lb);return}
     cl();
-    console.log('[IPTV] Fetch manifesto: '+lb);
-    var ctrl=new AbortController();
-    tm=setTimeout(function(){ctrl.abort()},12000);
-    fetch(pxFn(origUrl),{signal:ctrl.signal}).then(function(r){
-      if(!r.ok)throw new Error('HTTP '+r.status);
-      return r.text();
-    }).then(function(txt){
-      try{clearTimeout(tm)}catch(e){}
-      var rewritten=_rewriteM3U8(txt,origUrl,pxFn);
-      var blob=new Blob([rewritten],{type:'application/vnd.apple.mpegurl'});
-      var bUrl=URL.createObjectURL(blob);
-      console.log('[IPTV] Manifesto reescrito ('+rewritten.split('\n').length+' linhas)');
-      if(hi){try{hi.destroy()}catch(e){}hi=null;S.hls=null}
-      var h=new Hls({
-        enableWorker:true,lowLatencyMode:false,maxBufferLength:30,maxMaxBufferLength:120,
-        maxBufferSize:120*1000000,maxBufferHole:1,startLevel:-1,
-        manifestLoadingTimeOut:10000,manifestLoadingMaxRetry:1,manifestLoadingRetryDelay:800,
-        levelLoadingTimeOut:10000,levelLoadingMaxRetry:1,levelLoadingRetryDelay:800,
-        fragLoadingTimeOut:12000,fragLoadingMaxRetry:3,fragLoadingRetryDelay:800,
-        enableSoftFadeOut:true,progressive:true,
-        abrEwmaDefaultEstimate:500000,testBandwidth:false,startFragPrefetch:true
-      });
-      hi=h;S.hls=h;
-      h.loadSource(bUrl);h.attachMedia(vid);
-      vid.volume=S.volume/100;vid.muted=S.muted;
-      var dn=false;
-      h.on(Hls.Events.MANIFEST_PARSED,function(){
-        if(dn||ok)return;dn=true;
-        vid.play().then(function(){vOk(lb);S.muted=false;vid.muted=false;_autoMuted=false;hideUnmuteHint();uPP();startStallWatch(vid,h);startBlackScreenWatch(vid,h)}).catch(function(){vid.muted=true;S.muted=true;_autoMuted=true;vid.play().then(function(){vOk(lb);uPP();startStallWatch(vid,h);startBlackScreenWatch(vid,h);showUnmuteHint()}).catch(function(){dn=false;cl();setTimeout(nx,300)})});
-      });
-      h.on(Hls.Events.FRAG_LOADED,function(){vOk(lb);_retryCount=0;_lastBufPos=vid.currentTime;_blackCount=0});
-      h.on(Hls.Events.LEVEL_SWITCHED,function(){_blackCount=0});
-      h.on(Hls.Events.ERROR,function(e,d){
-        if(ok)return;
-        if(d.fatal){console.log('[IPTV] HLS-rw err: '+d.details);cl();setTimeout(nx,200);return}
-        if(d.type===Hls.ErrorTypes.MEDIA_ERROR){try{h.recoverMediaError()}catch(e){}}
-      });
-      tm=setTimeout(function(){if(!ok&&!dn){console.log('[IPTV] TO: '+lb);cl();nx()}},15000);
-    }).catch(function(err){
-      console.log('[IPTV] Manifesto falhou: '+err.message);
-      try{clearTimeout(tm)}catch(e){}
-      cl();setTimeout(nx,200);
-    });
-  }
-
-  function doVidProxy(origUrl,pxFn,lb){
-    cl();
-    var pUrl=pxFn(origUrl);
-    vid.removeAttribute('crossorigin');
-    vid.src=pUrl;
-    vid.volume=S.volume/100;vid.muted=S.muted;
-    var started=false;
-    function go(){
-      if(started)return;started=true;
-      vid.play().then(function(){vOk(lb);S.hls=null;startStallWatch(vid,null);startBlackScreenWatch(vid,null)}).catch(function(){vid.muted=true;S.muted=true;_autoMuted=true;vid.play().then(function(){vOk(lb);S.hls=null;startStallWatch(vid,null);showUnmuteHint()}).catch(function(){cl();setTimeout(nx,300)})});
+    var isTS=url.indexOf('.ts')!==-1;
+    var srcUrl;
+    if(isTS){
+      /* Cria manifesto m3u8 virtual para stream .ts */
+      var m3='#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:10.0,\n'+url;
+      var bl=new Blob([m3],{type:'application/vnd.apple.mpegurl'});
+      srcUrl=URL.createObjectURL(bl);
+    }else{
+      srcUrl=url;
     }
-    vid.oncanplay=function(){if(!ok)go()};
-    vid.onloadeddata=function(){if(!ok)go()};
-    vid.ontimeupdate=function(){if(!ok&&vid.currentTime>0.3)vOk(lb)};
-    vid.onerror=function(){if(!ok){var c=vid.error?vid.error.code:'?';console.log('[IPTV] vid-px err '+c+': '+lb);cl();setTimeout(nx,200)}};
-    go();
-    tm=setTimeout(function(){if(!ok){cl();nx()}},12000);
+    var h=new Hls({
+      enableWorker:true,lowLatencyMode:false,maxBufferLength:30,maxMaxBufferLength:120,
+      maxBufferSize:120*1000000,maxBufferHole:1,startLevel:-1,
+      manifestLoadingTimeOut:8000,manifestLoadingMaxRetry:1,manifestLoadingRetryDelay:600,
+      levelLoadingTimeOut:8000,levelLoadingMaxRetry:1,levelLoadingRetryDelay:600,
+      fragLoadingTimeOut:18000,fragLoadingMaxRetry:2,fragLoadingRetryDelay:1000,
+      progressive:true,testBandwidth:false,startFragPrefetch:true,
+      xhrSetup:function(xhr,rUrl){
+        if(rUrl.indexOf('blob:')===0)return;
+        var pU=proxyFn(rUrl);
+        xhr.open('GET',pU,true);
+      }
+    });
+    hi=h;S.hls=h;h.loadSource(srcUrl);h.attachMedia(vid);
+    vid.volume=S.volume/100;vid.muted=S.muted;
+    var dn=false;
+    h.on(Hls.Events.MANIFEST_PARSED,function(){
+      if(dn||ok)return;dn=true;
+      vid.play().then(function(){vOk(lb);S.muted=false;vid.muted=false;_autoMuted=false;hideUnmuteHint();uPP()}).catch(function(){vid.muted=true;S.muted=true;_autoMuted=true;vid.play().then(function(){vOk(lb);uPP();showUnmuteHint()}).catch(function(){dn=false;cl();setTimeout(nx,300)})});
+    });
+    h.on(Hls.Events.FRAG_LOADED,function(){if(!ok)vOk(lb);_retryCount=0;_lastBufPos=vid.currentTime;_blackCount=0});
+    h.on(Hls.Events.FRAG_CHANGED,function(){_blackCount=0});
+    h.on(Hls.Events.ERROR,function(e,d){
+      if(ok)return;
+      if(d.fatal){console.log('[IPTV] HLS-px err: '+d.details+' ['+lb+']');cl();setTimeout(nx,200);return}
+      if(d.type===Hls.ErrorTypes.MEDIA_ERROR){try{h.recoverMediaError()}catch(e){}}
+    });
+    tm=setTimeout(function(){if(!ok&&!dn){console.log('[IPTV] TO: '+lb);cl();nx()}},20000);
   }
 
+  /* Video direto (video.src) */
   function doVidDirect(url,lb){
     cl();
     vid.removeAttribute('crossorigin');
@@ -755,9 +722,9 @@ function playCh(ch){
     vid.oncanplay=function(){if(!ok)go()};
     vid.onloadeddata=function(){if(!ok)go()};
     vid.ontimeupdate=function(){if(!ok&&vid.currentTime>0.3)vOk(lb)};
-    vid.onerror=function(){if(!ok){var c=vid.error?vid.error.code:'?';console.log('[IPTV] vid err '+c+': '+lb);cl();setTimeout(nx,200)}};
+    vid.onerror=function(){if(!ok){console.log('[IPTV] vid err: '+lb);cl();setTimeout(nx,200)}};
     go();
-    tm=setTimeout(function(){if(!ok){cl();nx()}},10000);
+    tm=setTimeout(function(){if(!ok){cl();nx()}},12000);
   }
 
   nx();showCtrl();
@@ -1077,4 +1044,4 @@ function playVod(streamId,ext){
 }
 </script>
 </body>
-        </html>
+</html>
