@@ -425,16 +425,21 @@ window.onload=function(){
 function show(id){document.querySelectorAll('.scr').forEach(function(s){s.classList.remove('on')});document.getElementById(id).classList.add('on')}
 function tpw(){var i=document.getElementById('iPsw');i.type=i.type==='password'?'text':'password'}
 
+var _PROXY_LIST=[
+  {u:'https://api.codetabs.com/v1/proxy?quest=',enc:true},
+  {u:'https://corsproxy.io/?',enc:true},
+  {u:'https://api.allorigins.win/raw?url=',enc:true},
+  {u:'https://thingproxy.freeboard.io/fetch/',enc:false},
+  {u:'https://api.allorigins.win/get?url=',enc:true,mode:'json'},
+  {u:'https://cors.sh/?',enc:true}
+];
+var _proxyRound=0;
 function ft(url,ms){
-  var proxies=[
-    {u:'https://api.codetabs.com/v1/proxy?quest=',enc:true},
-    {u:'https://corsproxy.io/?',enc:true},
-    {u:'https://api.allorigins.win/raw?url=',enc:true},
-    {u:'https://thingproxy.freeboard.io/fetch/',enc:false},
-    {u:'https://crossorigin.me/',enc:true}
-  ];
   var isMixed=location.protocol==='https:'&&url.indexOf('http://')===0;
   return new Promise(function(resolve,reject){
+    var proxies=_PROXY_LIST.slice();
+    _proxyRound++;
+    var startIdx=(_proxyRound%proxies.length);
     var idx=0;
     function tryNext(){
       if(idx===0&&!isMixed){
@@ -442,18 +447,22 @@ function ft(url,ms){
         var timer=setTimeout(function(){ctrl.abort()},ms);
         fetch(url,{signal:ctrl.signal}).then(function(r){clearTimeout(timer);if(!r.ok){idx=1;tryNext();return}return r.text()}).then(function(t){if(!t){idx=1;tryNext();return}try{resolve(JSON.parse(t))}catch(e){idx=1;tryNext()}}).catch(function(){clearTimeout(timer);idx=1;tryNext()});
       }else{
-        if(idx>proxies.length){reject(new Error('Nao foi possivel conectar. Verifique o endereco.'));return}
-        if(idx===proxies.length){reject(new Error('Nao foi possivel conectar. Verifique o endereco.'));return}
-        var p=proxies[idx];idx++;
+        var pi=isMixed?(startIdx+idx-1)%proxies.length:(startIdx+idx)%proxies.length;
+        if(idx>proxies.length){reject(new Error('PROXY_FAIL'));return}
+        var p=proxies[pi];idx++;
         var pu=p.u+(p.enc?encodeURIComponent(url):url);
         var ctrl=new AbortController();
         var timer=setTimeout(function(){ctrl.abort()},ms);
-        fetch(pu,{signal:ctrl.signal}).then(function(r){clearTimeout(timer);if(!r.ok){tryNext();return}return r.text()}).then(function(t){if(!t||t.length<2){tryNext();return}try{resolve(JSON.parse(t))}catch(e){tryNext()}}).catch(function(){clearTimeout(timer);tryNext()});
+        fetch(pu,{signal:ctrl.signal}).then(function(r){clearTimeout(timer);if(!r.ok){tryNext();return}return r.text()}).then(function(t){
+          if(p.mode==='json'){try{var j=JSON.parse(t);t=j.contents||t}catch(e){}}
+          if(!t||t.length<2){tryNext();return}try{resolve(JSON.parse(t))}catch(e){tryNext()}
+        }).catch(function(){clearTimeout(timer);tryNext()});
       }
     }
     tryNext();
   })
 }
+function delay(ms){return new Promise(function(r){setTimeout(r,ms)})}
 
 async function doConnect(){
   var srv=document.getElementById('iSrv').value.trim(),usr=document.getElementById('iUsr').value.trim(),psw=document.getElementById('iPsw').value.trim();
@@ -463,24 +472,31 @@ async function doConnect(){
   document.getElementById('lErr').style.display='none';
   S.srv=srv.replace(/\/$/,'');S.usr=usr;S.psw=psw;
   document.getElementById('iSrv').value=S.srv;
+  var api=S.srv+'/player_api.php?username='+encodeURIComponent(usr)+'&password='+encodeURIComponent(psw);
   try{
-    var d=await ft(S.srv+'/player_api.php?username='+encodeURIComponent(usr)+'&password='+encodeURIComponent(psw),15000);
+    var d=await ft(api,15000);
     if(!d.user_info||d.user_info.auth===0)throw new Error('Usuario ou senha invalidos');
     try{localStorage.setItem('iptv_connection',JSON.stringify({server:S.srv,username:usr,password:psw}))}catch(e){}
     S.userInfo=d.user_info;
     if(S.userInfo.exp_date){var ex=new Date(Number(S.userInfo.exp_date)*1000);if(ex.getTime()>0){var es=ex.toLocaleDateString('pt-BR'),el=document.getElementById('hExp');el.textContent=es;el.style.display='flex';if(ex<new Date()){el.className='badge bg-r';el.textContent+=' (Expirado)'}}}
+    btn.innerHTML='<div class="spinner spinner-sm"></div> Carregando categorias...';
+    await delay(800);
+    var cd=await ft(api+'&action=get_live_categories',20000);
+    if(!Array.isArray(cd))cd=[];
+    S.cats=cd.map(function(c,i){return{id:String(c.category_id),name:c.category_name,color:cc(String(c.category_id),i)}});
     btn.innerHTML='<div class="spinner spinner-sm"></div> Carregando canais...';
-    var cd=await ft(S.srv+'/player_api.php?username='+encodeURIComponent(usr)+'&password='+encodeURIComponent(psw)+'&action=get_live_categories',15000);
-    S.cats=(cd||[]).map(function(c,i){return{id:String(c.category_id),name:c.category_name,color:cc(String(c.category_id),i)}});
-    var chd=await ft(S.srv+'/player_api.php?username='+encodeURIComponent(usr)+'&password='+encodeURIComponent(psw)+'&action=get_live_streams',20000);
-    S.chs=(chd||[]).map(function(s,i){return{id:'ch-'+s.stream_id,name:s.name,number:s.num||(i+1),categoryId:String(s.category_id),logo:s.stream_icon||'',streamId:s.stream_id,isHD:/hd|4k|fhd|uhd/i.test(s.name)}});
+    await delay(800);
+    var chd=await ft(api+'&action=get_live_streams',30000);
+    if(!Array.isArray(chd))chd=[];
+    S.chs=chd.map(function(s,i){return{id:'ch-'+s.stream_id,name:s.name,number:s.num||(i+1),categoryId:String(s.category_id),logo:s.stream_icon||'',streamId:s.stream_id,isHD:/hd|4k|fhd|uhd/i.test(s.name)}});
     try{S.favs=JSON.parse(localStorage.getItem('iptv_favorites')||'[]')}catch(e){}
     document.getElementById('hCntN').textContent=S.chs.length;document.getElementById('hCnt').style.display='flex';
     show('app');S.selCat='all';rCats();rCh();
     if(S.chs.length>0)playCh(S.chs[0]);
   }catch(e){
     var m=e.message||'Erro desconhecido';
-    if(/fetch|network|timeout|abort/i.test(m))m='Nao foi possivel conectar. Verifique o endereco.';
+    if(m==='PROXY_FAIL')m='Servidor demorou demais. Tente novamente (proxies sobrecarregados).';
+    else if(/fetch|network|timeout|abort/i.test(m))m='Erro de conexao. Verifique o endereco e tente novamente.';
     document.getElementById('lErr').style.display='flex';document.getElementById('lErrT').textContent=m;
     btn.disabled=false;btn.innerHTML='<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3" stroke-linecap="round" stroke-linejoin="round"/></svg> Conectar';
   }
@@ -1002,10 +1018,12 @@ async function loadVod(){
   if(S.vodLd||S.vodOk)return;S.vodLd=true;S.vodOk=false;S.vods=[];S.vCats=[];_vodCurPage=1;
   var ld=document.getElementById('vodLd');if(ld)ld.style.display='flex';
   try{
-    var cd=await ft(S.srv+'/player_api.php?username='+encodeURIComponent(S.usr)+'&password='+encodeURIComponent(S.psw)+'&action=get_vod_categories',15000);
-    S.vCats=(cd||[]).map(function(c,i){return{id:String(c.category_id),name:c.category_name,color:cc(String(c.category_id),i+50)}});
-    var vd=await ft(S.srv+'/player_api.php?username='+encodeURIComponent(S.usr)+'&password='+encodeURIComponent(S.psw)+'&action=get_vod_streams',30000);
-    if(!Array.isArray(vd)){throw new Error('Formato invalido')}
+    var cd=await ft(S.srv+'/player_api.php?username='+encodeURIComponent(S.usr)+'&password='+encodeURIComponent(S.psw)+'&action=get_vod_categories',20000);
+    if(!Array.isArray(cd))cd=[];
+    S.vCats=cd.map(function(c,i){return{id:String(c.category_id),name:c.category_name,color:cc(String(c.category_id),i+50)}});
+    await delay(800);
+    var vd=await ft(S.srv+'/player_api.php?username='+encodeURIComponent(S.usr)+'&password='+encodeURIComponent(S.psw)+'&action=get_vod_streams',35000);
+    if(!Array.isArray(vd))vd=[];
     var maxVods=Math.min(vd.length,500);
     S.vods=[];
     for(var i=0;i<maxVods;i++){
