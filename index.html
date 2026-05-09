@@ -426,36 +426,43 @@ function show(id){document.querySelectorAll('.scr').forEach(function(s){s.classL
 function tpw(){var i=document.getElementById('iPsw');i.type=i.type==='password'?'text':'password'}
 
 function ft(url,ms){
-  return new Promise(function(r,j){
-    var c=new AbortController(),
-    t=setTimeout(function(){c.abort()},ms);
-    fetch(url,{signal:c.signal,headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36','Accept':'application/json'}}).then(function(x){clearTimeout(t);if(!x.ok)j(new Error(x.status));return x.text()}).then(function(t){try{r(JSON.parse(t))}catch(e){j(e)}}).catch(function(e){j(e)})
-  }).catch(function(){
-    var proxies=[
-      {u:'https://corsproxy.io/?',enc:true},
-      {u:'https://api.allorigins.win/raw?url=',enc:true},
-      {u:'https://api.codetabs.com/v1/proxy?quest=',enc:true},
-      {u:'https://thingproxy.freeboard.io/fetch/',enc:false}
-    ];
-    var i=0;
-    function tryProxy(){
-      if(i>=proxies.length)return Promise.reject(new Error('Nao foi possivel conectar. Verifique o endereco.'));
-      var p=proxies[i],pu=p.u+(p.enc?encodeURIComponent(url):url);
-      return new Promise(function(r2,j2){
-        var c2=new AbortController(),t2=setTimeout(function(){c2.abort()},ms);
-        fetch(pu,{signal:c2.signal}).then(function(x){clearTimeout(t2);if(!x.ok){i++;tryProxy().then(r2).catch(j2);return}return x.text()}).then(function(tx){if(!tx||tx.length<2){i++;tryProxy().then(r2).catch(j2);return}try{r2(JSON.parse(tx))}catch(e){i++;tryProxy().then(r2).catch(j2)}}).catch(function(){clearTimeout(t2);i++;tryProxy().then(r2).catch(j2)})
-      })
+  var proxies=[
+    {u:'https://api.codetabs.com/v1/proxy?quest=',enc:true},
+    {u:'https://corsproxy.io/?',enc:true},
+    {u:'https://api.allorigins.win/raw?url=',enc:true},
+    {u:'https://thingproxy.freeboard.io/fetch/',enc:false},
+    {u:'https://crossorigin.me/',enc:true}
+  ];
+  var isMixed=location.protocol==='https:'&&url.indexOf('http://')===0;
+  return new Promise(function(resolve,reject){
+    var idx=0;
+    function tryNext(){
+      if(idx===0&&!isMixed){
+        var ctrl=new AbortController();
+        var timer=setTimeout(function(){ctrl.abort()},ms);
+        fetch(url,{signal:ctrl.signal}).then(function(r){clearTimeout(timer);if(!r.ok){idx=1;tryNext();return}return r.text()}).then(function(t){if(!t){idx=1;tryNext();return}try{resolve(JSON.parse(t))}catch(e){idx=1;tryNext()}}).catch(function(){clearTimeout(timer);idx=1;tryNext()});
+      }else{
+        if(idx>proxies.length){reject(new Error('Nao foi possivel conectar. Verifique o endereco.'));return}
+        if(idx===proxies.length){reject(new Error('Nao foi possivel conectar. Verifique o endereco.'));return}
+        var p=proxies[idx];idx++;
+        var pu=p.u+(p.enc?encodeURIComponent(url):url);
+        var ctrl=new AbortController();
+        var timer=setTimeout(function(){ctrl.abort()},ms);
+        fetch(pu,{signal:ctrl.signal}).then(function(r){clearTimeout(timer);if(!r.ok){tryNext();return}return r.text()}).then(function(t){if(!t||t.length<2){tryNext();return}try{resolve(JSON.parse(t))}catch(e){tryNext()}}).catch(function(){clearTimeout(timer);tryNext()});
+      }
     }
-    return tryProxy();
+    tryNext();
   })
 }
 
 async function doConnect(){
   var srv=document.getElementById('iSrv').value.trim(),usr=document.getElementById('iUsr').value.trim(),psw=document.getElementById('iPsw').value.trim();
   if(!srv||!usr||!psw)return;
+  if(srv.indexOf('http://')!==0&&srv.indexOf('https://')!==0)srv='http://'+srv;
   var btn=document.getElementById('btnC');btn.disabled=true;btn.innerHTML='<div class="spinner spinner-sm"></div> Conectando...';
   document.getElementById('lErr').style.display='none';
   S.srv=srv.replace(/\/$/,'');S.usr=usr;S.psw=psw;
+  document.getElementById('iSrv').value=S.srv;
   try{
     var d=await ft(S.srv+'/player_api.php?username='+encodeURIComponent(usr)+'&password='+encodeURIComponent(psw),15000);
     if(!d.user_info||d.user_info.auth===0)throw new Error('Usuario ou senha invalidos');
@@ -564,11 +571,7 @@ function _rewriteM3U8(text,origUrl,pxFn){
   return out.join('\n');
 }
 
-var _PROXIES=[
-  function(u){return'https://corsproxy.io/?'+encodeURIComponent(u)},
-  function(u){return'https://api.allorigins.win/raw?url='+encodeURIComponent(u)},
-  function(u){return'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(u)}
-];
+/* HLS rewrite helpers */
 
 function playCh(ch){
   S.selCh=ch;S.playing=false;rCh();resetZoom();
@@ -590,12 +593,11 @@ function playCh(ch){
     ST.push({t:'v',u:bH+'.ts',px:null,n:'TS Direto'});
   }
   if(pageIsH&&!srvIsH){
-    for(var pi=0;pi<_PROXIES.length;pi++){
-      (function(pfn,pidx){ST.push({t:'vp',u:bU+'.ts',px:pfn,n:'TS Proxy '+(pidx+1)})})(_PROXIES[pi],pi);
-    }
-    for(var pi=0;pi<_PROXIES.length;pi++){
-      (function(pfn,pidx){ST.push({t:'hr',u:bU+'.m3u8',px:pfn,n:'HLS Rewrite '+(pidx+1)})})(_PROXIES[pi],pi);
-    }
+    ST.push({t:'vp',u:bU+'.ts',px:function(u){return'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(u)},n:'TS Proxy 1'});
+    ST.push({t:'vp',u:bU+'.ts',px:function(u){return'https://corsproxy.io/?'+encodeURIComponent(u)},n:'TS Proxy 2'});
+    ST.push({t:'vp',u:bU+'.ts',px:function(u){return'https://thingproxy.freeboard.io/fetch/'+u},n:'TS Proxy 3'});
+    ST.push({t:'hr',u:bU+'.m3u8',px:function(u){return'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(u)},n:'HLS Rewrite 1'});
+    ST.push({t:'hr',u:bU+'.m3u8',px:function(u){return'https://corsproxy.io/?'+encodeURIComponent(u)},n:'HLS Rewrite 2'});
     ST.push({t:'v',u:bH+'.m3u8',px:null,n:'Nativo m3u8'});
     ST.push({t:'v',u:bH+'.ts',px:null,n:'Nativo TS'});
   }else if(!pageIsH){
@@ -1057,4 +1059,4 @@ function playVod(streamId,ext){
 }
 </script>
 </body>
-                          </html>
+        </html>
